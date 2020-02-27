@@ -1,42 +1,64 @@
 # adapted from https://github.com/JuliaLang/julia/blob/cced577b79316ea38482d84b69e7be9666d14041/stdlib/REPL/src/REPLCompletions.jl
 # by aviatesk, 2020/02/28
 
-module REPLCompletions
+module FuzzyCompletions
 
-export completions, shell_completions, bslash_completions, completion_text
+export completions, shell_completions, bslash_completions, completion_text, score
 
 using Base.Meta
 using Base: propertynames, something
+using REPL
+
+fuzzyscore(needle, haystack) = REPL.fuzzyscore(string(needle), string(haystack))
 
 abstract type Completion end
 
 struct KeywordCompletion <: Completion
     keyword::String
+    score::Float64
 end
+KeywordCompletion(keyword::String) = KeywordCompletion(keyword, Inf)
+KeywordCompletion(keyword::String, needle) = KeywordCompletion(keyword, fuzzyscore(needle, keyword))
 
 struct PathCompletion <: Completion
     path::String
+    score::Float64
 end
+PathCompletion(path::String) = PathCompletion(path, Inf)
+PathCompletion(path::String, needle) = PathCompletion(path, fuzzyscore(needle, path))
 
 struct ModuleCompletion <: Completion
     parent::Module
     mod::String
+    score::Float64
 end
+ModuleCompletion(parent::Module, mod::String) = ModuleCompletion(parent, mod, Inf)
+ModuleCompletion(parent::Module, mod::String, needle) = ModuleCompletion(parent, mod, fuzzyscore(needle, mod))
 
 struct PackageCompletion <: Completion
     package::String
+    score::Float64
 end
+PackageCompletion(package::String) = PackageCompletion(package, Inf)
+PackageCompletion(package::String, needle) = PackageCompletion(package, fuzzyscore(needle, package))
 
 struct PropertyCompletion <: Completion
     value
     property::Symbol
+    score::Float64
 end
+PropertyCompletion(value, property::Symbol) = PropertyCompletion(value, property, Inf)
+PropertyCompletion(value, property::Symbol, needle) = PropertyCompletion(value, property, fuzzyscore(needle, property))
 
 struct FieldCompletion <: Completion
     typ::DataType
     field::Symbol
+    score::Float64
 end
+FieldCompletion(typ::DataType, field::Symbol) = FieldCompletion(typ, field, Inf)
+FieldCompletion(typ::DataType, field::Symbol, needle) = FieldCompletion(typ, field, fuzzyscore(needle, field))
 
+# NOTE: no fuzzyness is needed for this
 struct MethodCompletion <: Completion
     func
     input_types::Type
@@ -45,7 +67,10 @@ end
 
 struct BslashCompletion <: Completion
     bslash::String
+    score::Float64
 end
+BslashCompletion(bslash::String) = BslashCompletion(bslash, Inf)
+BslashCompletion(bslash::String, needle) = BslashCompletion(bslash, fuzzyscore(needle, bslash))
 
 struct ShellCompletion <: Completion
     text::String
@@ -54,7 +79,10 @@ end
 struct DictCompletion <: Completion
     dict::AbstractDict
     key::String
+    score::Float64
 end
+DictCompletion(dict::AbstractDict, key::String) = DictCompletion(dict, key, Inf)
+DictCompletion(dict::AbstractDict, key::String, needle) = DictCompletion(dict, key, fuzzyscore(needle, key))
 
 completion_text(c::KeywordCompletion) = c.keyword
 completion_text(c::PathCompletion) = c.path
@@ -69,9 +97,9 @@ completion_text(c::DictCompletion) = c.key
 
 const Completions = Tuple{Vector{Completion}, UnitRange{Int64}, Bool}
 
-function completes_global(x, name)
-    return startswith(x, name) && !('#' in x)
-end
+score(c::Completion) = c.score
+score(c::MethodCompletion) = 0.0
+score(c::ShellCompletion) = 0.0
 
 function appendmacro!(syms, macros, needle, endchar)
     for s in macros
@@ -87,11 +115,11 @@ function filtered_mod_names(ffunc::Function, mod::Module, name::AbstractString, 
     ssyms = names(mod, all = all, imported = imported)
     filter!(ffunc, ssyms)
     syms = String[string(s) for s in ssyms]
-    macros =  filter(x -> startswith(x, "@" * name), syms)
+    macros = filter(x -> startswith(x, "@" * name), syms)
     appendmacro!(syms, macros, "_str", "\"")
     appendmacro!(syms, macros, "_cmd", "`")
-    filter!(x->completes_global(x, name), syms)
-    return [ModuleCompletion(mod, sym) for sym in syms]
+    filter!(sym -> '#' ∉ sym, syms)
+    return [ModuleCompletion(mod, sym, name) for sym in syms]
 end
 
 # REPL Symbol Completions
@@ -147,9 +175,7 @@ function complete_symbol(sym, ffunc, context_module=Main)::Vector{Completion}
     elseif val !== nothing # looking for a property of an instance
         for property in propertynames(val, false)
             s = string(property)
-            if startswith(s, name)
-                push!(suggestions, PropertyCompletion(val, property))
-            end
+            push!(suggestions, PropertyCompletion(val, property, name))
         end
     else
         # Looking for a member of a type
@@ -163,9 +189,7 @@ function complete_symbol(sym, ffunc, context_module=Main)::Vector{Completion}
                 fields = fieldnames(t)
                 for field in fields
                     s = string(field)
-                    if startswith(s, name)
-                        push!(suggestions, FieldCompletion(t, field))
-                    end
+                    push!(suggestions, FieldCompletion(t, field, name))
                 end
             end
         end
@@ -181,15 +205,14 @@ const sorted_keywords = [
     "primitive type", "quote", "return", "struct",
     "true", "try", "using", "while"]
 
-function complete_keyword(s::Union{String,SubString{String}})::Vector{Completion}
-    r = searchsorted(sorted_keywords, s)
-    i = first(r)
-    n = length(sorted_keywords)
-    while i <= n && startswith(sorted_keywords[i],s)
-        r = first(r):i
-        i += 1
-    end
-    map(KeywordCompletion, sorted_keywords[r])
+# NOTE:
+# I would like to be a bit strict on `KeywordCompletion`s:
+# they are so common that it would look verbose if they appear in every completion.
+# I want to restict their fuzzyness only after a strict match on the first character.
+function complete_keyword(s::Union{String,SubString{String}})::Vector{KeywordCompletion}
+    c = first(s, 1)
+    filtered_keywords = filter(k -> startswith(k, c), sorted_keywords)
+    KeywordCompletion[KeywordCompletion(keyword, s) for keyword in filtered_keywords]
 end
 
 function complete_path(path::AbstractString, pos; use_envpath=false, shell_escape=false)::Completions
@@ -218,11 +241,9 @@ function complete_path(path::AbstractString, pos; use_envpath=false, shell_escap
 
     matches = Set{String}()
     for file in files
-        if startswith(file, prefix)
-            id = try isdir(joinpath(dir, file)) catch; false end
-            # joinpath is not used because windows needs to complete with double-backslash
-            push!(matches, id ? file * (@static Sys.iswindows() ? "\\\\" : "/") : file)
-        end
+        id = try isdir(joinpath(dir, file)) catch; false end
+        # joinpath is not used because windows needs to complete with double-backslash
+        push!(matches, id ? file * (@static Sys.iswindows() ? "\\\\" : "/") : file)
     end
 
     if use_envpath && length(dir) == 0
@@ -260,19 +281,17 @@ function complete_path(path::AbstractString, pos; use_envpath=false, shell_escap
             for file in filesinpath
                 # In a perfect world, we would filter on whether the file is executable
                 # here, or even on whether the current user can execute the file in question.
-                if startswith(file, prefix) && isfile(joinpath(pathdir, file))
-                    push!(matches, file)
-                end
+                isfile(joinpath(pathdir, file)) && push!(matches, file)
             end
         end
     end
 
-    matchList = PathCompletion[PathCompletion(shell_escape ? replace(s, r"\s" => s"\\\0") : s) for s in matches]
+    matchList = PathCompletion[PathCompletion(shell_escape ? replace(s, r"\s" => s"\\\0") : s, prefix) for s in matches]
     startpos = pos - lastindex(prefix) + 1 - count(isequal(' '), prefix)
     # The pos - lastindex(prefix) + 1 is correct due to `lastindex(prefix)-lastindex(prefix)==0`,
     # hence we need to add one to get the first index. This is also correct when considering
     # pos, because pos is the `lastindex` a larger string which `endswith(path)==true`.
-    return matchList, startpos:pos, !isempty(matchList)
+    return sort_suggestions!(matchList), startpos:pos, !isempty(matchList)
 end
 
 function complete_expanduser(path::AbstractString, r)::Completions
@@ -469,8 +488,8 @@ function complete_methods(ex_org::Expr, context_module=Main)::Vector{Completion}
     return out
 end
 
-include("latex_symbols.jl")
-include("emoji_symbols.jl")
+using REPL.REPLCompletions: latex_symbols
+using REPL.REPLCompletions: emoji_symbols
 
 const non_identifier_chars = [" \t\n\r\"\\'`\$><=:;|&{}()[],+-*/?%^~"...]
 const whitespace_chars = [" \t\n\r"...]
@@ -508,13 +527,8 @@ function bslash_completions(string, pos)::Tuple{Bool, Completions}
         end
         # return possible matches; these cannot be mixed with regular
         # Julian completions as only latex / emoji symbols contain the leading \
-        if startswith(s, "\\:") # emoji
-            emoji_names = Iterators.filter(k -> startswith(k, s), keys(emoji_symbols))
-            return (true, (map(BslashCompletion, sort!(collect(emoji_names))), slashpos:pos, true))
-        else # latex
-            latex_names = Iterators.filter(k -> startswith(k, s), keys(latex_symbols))
-            return (true, (map(BslashCompletion, sort!(collect(latex_names))), slashpos:pos, true))
-        end
+        suggestions = [BslashCompletion(k, s) for k in keys(startswith(s, "\\:") ? emoji_symbols : latex_symbols)]
+        return (true, (sort_suggestions!(suggestions), slashpos:pos, true))
     end
     return (false, (Completion[], 0:-1, false))
 end
@@ -544,14 +558,7 @@ function dict_identifier_key(str,tag)
 end
 
 # This needs to be a separate non-inlined function, see #19441
-@noinline function find_dict_matches(identifier, partial_key)
-    matches = String[]
-    for key in keys(identifier)
-        rkey = repr(key)
-        startswith(rkey,partial_key) && push!(matches,rkey)
-    end
-    return matches
-end
+@noinline find_dict_matches(identifier) = String[repr(key) for key in keys(identifier)]
 
 function project_deps_get_completion_candidates(pkgstarts::String, project_file::String)::Vector{Completion}
     loading_candidates = String[]
@@ -563,20 +570,20 @@ function project_deps_get_completion_candidates(pkgstarts::String, project_file:
             elseif state === :top
                 if (m = match(Base.re_name_to_string, line)) !== nothing
                     root_name = String(m.captures[1])
-                    startswith(root_name, pkgstarts) && push!(loading_candidates, root_name)
+                    push!(loading_candidates, root_name)
                 end
             elseif state === :deps
                 if (m = match(Base.re_key_to_string, line)) !== nothing
                     dep_name = m.captures[1]
-                    startswith(dep_name, pkgstarts) && push!(loading_candidates, dep_name)
+                    push!(loading_candidates, dep_name)
                 end
             end
         end
     end
-    return Completion[PackageCompletion(name) for name in loading_candidates]
+    return Completion[PackageCompletion(name, pkgstarts) for name in loading_candidates]
 end
 
-function completions(string, pos, context_module=Main)::Completions
+function completions(string, pos, context_module = Main)::Completions
     # First parse everything up to the current position
     partial = string[1:pos]
     inc_tag = Base.incomplete_tag(Meta.parse(partial, raise=false, depwarn=false))
@@ -584,9 +591,12 @@ function completions(string, pos, context_module=Main)::Completions
     # if completing a key in a Dict
     identifier, partial_key, loc = dict_identifier_key(partial,inc_tag)
     if identifier !== nothing
-        matches = find_dict_matches(identifier, partial_key)
+        matches = find_dict_matches(identifier)
         length(matches)==1 && (lastindex(string) <= pos || string[nextind(string,pos)] != ']') && (matches[1]*=']')
-        length(matches)>0 && return [DictCompletion(identifier, match) for match in sort!(matches)], loc:pos, true
+        if length(matches)>0
+            suggestions = [DictCompletion(identifier, match, partial_key) for match in matches]
+            return sort_suggestions!(suggestions), loc:pos, false
+        end
     end
 
     # otherwise...
@@ -610,7 +620,7 @@ function completions(string, pos, context_module=Main)::Completions
         end
 
         #Latex symbols can be completed for strings
-        (success || inc_tag==:cmd) && return sort!(paths, by=p->p.path), r, success
+        (success || inc_tag==:cmd) && return paths, r, success
     end
 
     ok, ret = bslash_completions(string, pos)
@@ -659,15 +669,14 @@ function completions(string, pos, context_module=Main)::Completions
                 end
                 isdir(dir) || continue
                 for pname in readdir(dir)
-                    if pname[1] != '.' && pname != "METADATA" &&
-                        pname != "REQUIRE" && startswith(pname, s)
+                    if pname[1] != '.' && pname != "METADATA" && pname != "REQUIRE"
                         # Valid file paths are
                         #   <Mod>.jl
                         #   <Mod>/src/<Mod>.jl
                         #   <Mod>.jl/src/<Mod>.jl
                         if isfile(joinpath(dir, pname))
                             endswith(pname, ".jl") && push!(suggestions,
-                                                            PackageCompletion(pname[1:prevind(pname, end-2)]))
+                                                            PackageCompletion(pname[1:prevind(pname, end-2)], s))
                         else
                             mod_name = if endswith(pname, ".jl")
                                 pname[1:prevind(pname, end-2)]
@@ -676,7 +685,7 @@ function completions(string, pos, context_module=Main)::Completions
                             end
                             if isfile(joinpath(dir, pname, "src",
                                                "$mod_name.jl"))
-                                push!(suggestions, PackageCompletion(mod_name))
+                                push!(suggestions, PackageCompletion(mod_name, s))
                             end
                         end
                     end
@@ -715,8 +724,10 @@ function completions(string, pos, context_module=Main)::Completions
         end
     end
     append!(suggestions, complete_symbol(s, ffunc, context_module))
-    return sort!(unique(suggestions), by=completion_text), (dotpos+1):pos, true
+    return sort_suggestions!(suggestions), (dotpos+1):pos, false
 end
+
+@inline sort_suggestions!(suggestions) = sort!(suggestions, by=score, rev=true)
 
 function shell_completions(string, pos)::Completions
     # First parse everything up to the current position
