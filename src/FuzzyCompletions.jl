@@ -727,7 +727,8 @@ function completions(string, pos, context_module = Main)::Completions
     return sort_suggestions!(suggestions), (dotpos+1):pos, false
 end
 
-@inline sort_suggestions!(suggestions) = sort!(suggestions, by=score, rev=true)
+@inline sort_suggestions!(suggestions) =
+    sort!((@static VERSION ≥ v"1.1" ? unique! : unique)(c->completion_text(c), suggestions), by=score, rev=true)
 
 function shell_completions(string, pos)::Completions
     # First parse everything up to the current position
