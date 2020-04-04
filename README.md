@@ -1,8 +1,8 @@
 # FuzzyCompletions.jl
 
-`FuzzyCompletions` provides fuzzy completions.
+`FuzzyCompletions` provides fuzzy completions for a Julia runtime session.
 
-Its API is totally compatible with compatible with the standard library module [`REPL.REPLCompletions`](https://github.com/JuliaLang/julia/blob/master/stdlib/REPL/src/REPLCompletions.jl);
+Its API is totally compatible with the standard library module [`REPL.REPLCompletions`](https://github.com/JuliaLang/julia/blob/master/stdlib/REPL/src/REPLCompletions.jl);
 so this package can be used as a drop-in replacement for your completion provider.
 
 ## example
@@ -28,9 +28,7 @@ function LineEdit.complete_line(c::FuzzyCompletionProvider, s)
   return unique!(FuzzyCompletions.completion_text.(comps)), partial[range], should_complete
 end
 
-let main_mode = Base.active_repl.interface.modes[1]
-    main_mode.complete = FuzzyCompletionProvider(Main) # or whatever module where you want to get completes from
-end
+Base.active_repl.interface.modes[1].complete = FuzzyCompletionProvider(Main) # or whatever module where you want to get completes from
 ```
 
 Then, your REPL will work like
