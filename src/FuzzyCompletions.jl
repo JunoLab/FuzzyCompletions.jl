@@ -103,7 +103,17 @@ completion_text(c::DictCompletion) = c.key
 
 const Completions = Tuple{Vector{Completion}, UnitRange{Int64}, Bool}
 
+const CompleteAlways = Union{
+    PathCompletion,
+    PackageCompletion,
+    PropertyCompletion,
+    FieldCompletion,
+    BslashCompletion,
+    DictCompletion,
+}
+
 score(c::Completion) = c.score
+score(c::CompleteAlways) = max(0.0, c.score)
 score(c::MethodCompletion) = 0.0
 score(c::ShellCompletion) = 0.0
 
