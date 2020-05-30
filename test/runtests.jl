@@ -84,3 +84,9 @@ let m = Core.eval(@__MODULE__, :(
     @test ":a" == comp("d[:ad", m) # not empty
 end
 end
+
+@testset "Case Sensitivity" begin
+@test comp("nothing") == "nothing"
+@test comp("Nothing") == "Nothing"
+@test comp("Mis") == "Missing"
+end

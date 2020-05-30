@@ -9,7 +9,13 @@ using Base.Meta
 using Base: propertynames, something
 using REPL
 
-fuzzyscore(needle, haystack) = REPL.fuzzyscore(string(needle), string(haystack))
+# subtracting a small term proportional to levenshtein distance allows for case-sensitive matching
+# without affecting other behaviours
+const DISCOUNT_COEF_LEVENSTEIN = 1e-4
+
+fuzzyscore(needle::String, haystack::String) =
+    REPL.fuzzyscore(needle, haystack) - DISCOUNT_COEF_LEVENSTEIN * REPL.levenshtein(needle, haystack)
+fuzzyscore(needle, haystack) = fuzzyscore(string(needle), string(haystack))
 
 abstract type Completion end
 
@@ -97,7 +103,17 @@ completion_text(c::DictCompletion) = c.key
 
 const Completions = Tuple{Vector{Completion}, UnitRange{Int64}, Bool}
 
+const CompleteAlways = Union{
+    PathCompletion,
+    PackageCompletion,
+    PropertyCompletion,
+    FieldCompletion,
+    BslashCompletion,
+    DictCompletion,
+}
+
 score(c::Completion) = c.score
+score(c::CompleteAlways) = max(0.0, c.score)
 score(c::MethodCompletion) = 0.0
 score(c::ShellCompletion) = 0.0
 
