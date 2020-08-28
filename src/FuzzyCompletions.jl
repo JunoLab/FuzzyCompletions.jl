@@ -606,6 +606,8 @@ end
 # This needs to be a separate non-inlined function, see #19441
 @noinline find_dict_matches(identifier) = String[repr(key) for key in keys(identifier)]
 
+@static if isdefined(Base, :re_selection)
+
 function project_deps_get_completion_candidates(pkgstarts::String, project_file::String)
     loading_candidates = String[]
     open(project_file) do io
@@ -628,6 +630,25 @@ function project_deps_get_completion_candidates(pkgstarts::String, project_file:
     end
     return Completion[PackageCompletion(name, pkgstarts) for name in loading_candidates]
 end
+
+else # @static if isdefined(Base, :re_selection)
+
+function project_deps_get_completion_candidates(pkgstarts::String, project_file::String)
+    loading_candidates = String[]
+    p = Base.TOML.Parser()
+    Base.TOML.reinit!(p, read(project_file, String); filepath=project_file)
+    d = Base.TOML.parse(p)
+    pkg = get(d, "name", nothing)
+    if pkg !== nothing && startswith(pkg, pkgstarts)
+        push!(loading_candidates, pkg)
+    end
+    for (pkg, _) in get(d, "deps", [])
+        startswith(pkg, pkgstarts) && push!(loading_candidates, pkg)
+    end
+    return Completion[PackageCompletion(name) for name in loading_candidates]
+end
+
+end # @static if isdefined(Base, :re_selection)
 
 function completions(string, pos, context_module = Main)
     # First parse everything up to the current position
