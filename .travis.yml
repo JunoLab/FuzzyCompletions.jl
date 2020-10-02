@@ -6,7 +6,6 @@ os:
 
 julia:
   - 1       # current stable
-  - 1.0.5   # lts
   - nightly
 
 matrix:

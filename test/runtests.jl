@@ -1,4 +1,4 @@
-using FuzzyCompletions, Test
+using FuzzyCompletions, REPL, Test
 
 # simple tests
 comps(s, m = Main) = completion_text.(completions(s, lastindex(s), m)[1])

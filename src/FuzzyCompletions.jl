@@ -446,16 +446,28 @@ function get_type_call(expr::Expr)
         typ, found = get_type(ex, Main)
         found ? push!(args, typ) : push!(args, Any)
     end
-    # use _methods_by_ftype as the function is supplied as a type
-    world = @static isdefined(Base, :get_world_counter) ? Base.get_world_counter() : ccall(:jl_get_world_counter, UInt, ())
-    mt = Base._methods_by_ftype(Tuple{ft, args...}, -1, world)
-    length(mt) == 1 || return (Any, false)
-    m = first(mt)
-    # Typeinference
-    params = Core.Compiler.Params(world)
-    return_type = Core.Compiler.typeinf_type(m[3], m[1], m[2], params)
-    return_type === nothing && return (Any, false)
-    return (return_type, true)
+    @static if isdefined(Core.Compiler, :NativeInterpreter)
+        # use _methods_by_ftype as the function is supplied as a type
+        world = Base.get_world_counter()
+        matches = Base._methods_by_ftype(Tuple{ft, args...}, -1, world)
+        length(matches) == 1 || return (Any, false)
+        match = first(matches)
+        # Typeinference
+        interp = Core.Compiler.NativeInterpreter()
+        return_type = Core.Compiler.typeinf_type(interp, match.method, match.spec_types, match.sparams)
+        return_type === nothing && return (Any, false)
+        return (return_type, true)
+    else
+        world = @static isdefined(Base, :get_world_counter) ? Base.get_world_counter() : ccall(:jl_get_world_counter, UInt, ())
+        mt = Base._methods_by_ftype(Tuple{ft, args...}, -1, world)
+        length(mt) == 1 || return (Any, false)
+        m = first(mt)
+        # Typeinference
+        params = Core.Compiler.Params(world)
+        return_type = Core.Compiler.typeinf_type(m[3], m[1], m[2], params)
+        return_type === nothing && return (Any, false)
+        return (return_type, true)
+    end
 end
 
 # Returns the return type. example: get_type(:(Base.strip("", ' ')), Main) returns (String, true)
