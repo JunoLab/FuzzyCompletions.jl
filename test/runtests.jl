@@ -90,3 +90,7 @@ end
 @test comp("Nothing") == "Nothing"
 @test comp("Mis") == "Missing"
 end
+
+@testset "inferrability" begin
+    @inferred FuzzyCompletions.completions("foo", lastindex("foo"), @__MODULE__)
+end
