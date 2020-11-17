@@ -591,7 +591,7 @@ function bslash_completions(string, pos)
     return (false, (Completion[], 0:-1, false))
 end
 
-function dict_identifier_key(str, tag, context_module)
+function dict_identifier_key(str, tag, context_module = Main)
     if tag === :string
         str_close = str*"\""
     elseif tag === :cmd
@@ -670,7 +670,7 @@ function completions(string, pos, context_module = Main)
     # if completing a key in a Dict
     identifier, partial_key, loc = dict_identifier_key(partial,inc_tag, context_module)
     if identifier !== nothing
-        matches = find_dict_matches(identifier)
+        matches = find_dict_matches(identifier)::Vector{String}
         length(matches)==1 && (lastindex(string) <= pos || string[nextind(string,pos)] != ']') && (matches[1]*=']')
         if length(matches)>0
             suggestions = Completion[DictCompletion(identifier, match, partial_key) for match in matches]
@@ -714,9 +714,12 @@ function completions(string, pos, context_module = Main)
         ex = Meta.parse(s * ")", raise=false, depwarn=false)
 
         if isa(ex, Expr)
-            if ex.head==:call
+            if ex.head === :call
                 return complete_methods(ex, context_module), first(frange):method_name_end, false
-            elseif ex.head==:. && ex.args[2] isa Expr && ex.args[2].head==:tuple
+            elseif ex.head === :. && begin
+                    x = ex.args[2]
+                    isa(x, Expr) && x.head === :tuple
+                end
                 return complete_methods(ex, context_module), first(frange):(method_name_end - 1), false
             end
         end
