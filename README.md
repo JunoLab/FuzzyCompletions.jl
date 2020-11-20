@@ -48,6 +48,7 @@ we usually want CLI to complete eagerly, not to be an indecisive boy.
 
 Fuzzy completions can be useful within IDE or somewhere some richer UI for showing/selecting completion suggestions is available:
 - [Juno](https://junolab.org/): https://github.com/JunoLab/Atom.jl/pull/308
+- [Pluto](https://github.com/fonsp/Pluto.jl): https://github.com/fonsp/Pluto.jl/pull/689
 
 ## acknowledgment
 
