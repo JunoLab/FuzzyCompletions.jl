@@ -720,7 +720,6 @@ function completions(string, pos, context_module = Main)
                 sort_suggestions!(append!(first(bs_ret), paths))
                 return bs_ret
             end
-            return paths, r, success
         end
         #Latex symbols can be completed for strings
         (success || inc_tag === :cmd) && return paths, r, success
