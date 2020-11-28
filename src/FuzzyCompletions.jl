@@ -713,8 +713,17 @@ function completions(string, pos, context_module = Main)
             paths[1] = PathCompletion(paths[1].path * "\"")
         end
 
+        # within string scope, append latex completions as well
+        if inc_tag === :string
+            should_bs, bs_ret = bslash_completions(string, pos)
+            if should_bs
+                sort_suggestions!(append!(first(bs_ret), paths))
+                return bs_ret
+            end
+            return paths, r, success
+        end
         #Latex symbols can be completed for strings
-        (success || inc_tag==:cmd) && return paths, r, success
+        (success || inc_tag === :cmd) && return paths, r, success
     end
 
     ok, ret = bslash_completions(string, pos)
