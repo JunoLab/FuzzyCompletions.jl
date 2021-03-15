@@ -102,4 +102,8 @@ end
     @inferred FuzzyCompletions.completions("foo", lastindex("foo"), @__MODULE__)
 end
 
+@static Sys.isunix() && @testset "https://github.com/JunoLab/FuzzyCompletions.jl/issues/7" begin
+    (comp(string(@__DIR__, " ")); @test true)
+end
+
 end
