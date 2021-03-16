@@ -253,6 +253,16 @@ function complete_keyword(s::Union{String,SubString{String}})
 end
 
 function complete_path(path::AbstractString, pos; use_envpath=false, shell_escape=false)
+    # https://github.com/JunoLab/FuzzyCompletions.jl/issues/7
+    if endswith(path, ' ')
+        # in order to keep type stability, we just return empty completion for this case
+        return Completion[], 0:-1, false
+        # return REPL.REPLCompletions.complete_path(
+        #     path, pos;
+        #     use_envpath  = use_envpath,
+        #     shell_escape = shell_escape)
+    end
+
     if Base.Sys.isunix() && occursin(r"^~(?:/|$)", path)
         # if the path is just "~", don't consider the expanded username as a prefix
         if path == "~"
