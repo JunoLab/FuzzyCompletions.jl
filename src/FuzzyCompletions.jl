@@ -420,16 +420,28 @@ function get_value(sym::Expr, fn)
 end
 get_value(sym::Symbol, fn) = isdefined(fn, sym) ? (getfield(fn, sym), true) : (nothing, false)
 get_value(sym::QuoteNode, fn) = isdefined(fn, sym.value) ? (getfield(fn, sym.value), true) : (nothing, false)
+get_value(sym::GlobalRef, fn) = get_value(sym.name, sym.mod)
 get_value(sym, fn) = (sym, true)
 
 # Return the value of a getfield call expression
-function get_value_getfield(ex::Expr, fn)
-    # Example :((top(getfield))(Base,:max))
-    val, found = get_value_getfield(ex.args[2],fn) #Look up Base in Main and returns the module
-    (found && length(ex.args) >= 3) || return (nothing, false)
-    return get_value_getfield(ex.args[3], val) #Look up max in Base and returns the function if found.
+# Return the type of a getfield call expression
+function get_type_getfield(ex::Expr, fn::Module)
+    length(ex.args) == 3 || return Any, false # should never happen, but just for safety
+    obj, x = ex.args[2:3]
+    objt, found = get_type(obj, fn)
+    objt isa DataType || return Any, false
+    found || return Any, false
+    if x isa QuoteNode
+        fld = x.value
+    elseif isexpr(x, :quote) || isexpr(x, :inert)
+        fld = x.args[1]
+    else
+        fld = nothing # we don't know how to get the value of variable `x` here
+    end
+    fld isa Symbol || return Any, false
+    hasfield(objt, fld) || return Any, false
+    return fieldtype(objt, fld), true
 end
-get_value_getfield(sym, fn) = get_value(sym, fn)
 
 # Determines the return type with Base.return_types of a function call using the type information of the arguments.
 function get_type_call(expr::Expr)
@@ -450,9 +462,9 @@ function get_type_call(expr::Expr)
     @static if isdefined(Core.Compiler, :NativeInterpreter)
         # use _methods_by_ftype as the function is supplied as a type
         world = Base.get_world_counter()
-        matches = Base._methods_by_ftype(Tuple{ft, args...}, -1, world)
+        matches = Base._methods_by_ftype(Tuple{ft, args...}, -1, world)::Vector
         length(matches) == 1 || return (Any, false)
-        match = first(matches)
+        match = first(matches)::Core.MethodMatch
         # Typeinference
         interp = Core.Compiler.NativeInterpreter()
         return_type = Core.Compiler.typeinf_type(interp, match.method, match.spec_types, match.sparams)
@@ -471,7 +483,7 @@ function get_type_call(expr::Expr)
     end
 end
 
-# Returns the return type. example: get_type(:(Base.strip("", ' ')), Main) returns (String, true)
+# Returns the return type. example: get_type(:(Base.strip("", ' ')), Main) returns (SubString{String}, true)
 function try_get_type(sym::Expr, fn::Module)
     val, found = get_value(sym, fn)
     found && return Base.typesof(val).parameters[1], found
@@ -479,10 +491,8 @@ function try_get_type(sym::Expr, fn::Module)
         # getfield call is special cased as the evaluation of getfield provides good type information,
         # is inexpensive and it is also performed in the complete_symbol function.
         a1 = sym.args[1]
-        if isa(a1,GlobalRef) && isconst(a1.mod,a1.name) && isdefined(a1.mod,a1.name) &&
-            eval(a1) === Core.getfield
-            val, found = get_value_getfield(sym, Main)
-            return found ? Base.typesof(val).parameters[1] : Any, found
+        if a1 === :getfield || a1 === GlobalRef(Core, :getfield)
+            return get_type_getfield(sym, fn)
         end
         return get_type_call(sym)
     elseif sym.head === :thunk
@@ -504,6 +514,11 @@ function get_type(sym::Expr, fn::Module)
     # try to analyze nests of calls. if this fails, try using the expanded form.
     val, found = try_get_type(sym, fn)
     found && return val, found
+     # https://github.com/JuliaLang/julia/issues/27184
+     if isexpr(sym, :macrocall)
+        _, found = get_type(first(sym.args), fn)
+        found || return Any, false
+    end
     return try_get_type(Meta.lower(fn, sym), fn)
 end
 
@@ -581,6 +596,11 @@ const whitespace_chars = [" \t\n\r"...]
 # bslash_completions function to try and complete on escaped characters in strings
 const bslash_separators = [whitespace_chars..., "\"'`"...]
 
+const subscripts = Dict(k[3]=>v[1] for (k,v) in latex_symbols if startswith(k, "\\_") && length(k)==3)
+const subscript_regex = Regex("^\\\\_[" * join(isdigit(k) || isletter(k) ? "$k" : "\\$k" for k in keys(subscripts)) * "]+\\z")
+const superscripts = Dict(k[3]=>v[1] for (k,v) in latex_symbols if startswith(k, "\\^") && length(k)==3)
+const superscript_regex = Regex("^\\\\\\^[" * join(isdigit(k) || isletter(k) ? "$k" : "\\$k" for k in keys(superscripts)) * "]+\\z")
+
 # Aux function to detect whether we're right after a
 # using or import keyword
 function afterusing(string::String, startpos::Int)
@@ -603,6 +623,12 @@ function bslash_completions(string, pos)
         latex = get(latex_symbols, s, "")
         if !isempty(latex) # complete an exact match
             return (true, (Completion[BslashCompletion(latex)], slashpos:pos, true))
+        elseif occursin(subscript_regex, s)
+            sub = map(c -> subscripts[c], s[3:end])
+            return (true, (Completion[BslashCompletion(sub)], slashpos:pos, true))
+        elseif occursin(superscript_regex, s)
+            sup = map(c -> superscripts[c], s[3:end])
+            return (true, (Completion[BslashCompletion(sup)], slashpos:pos, true))
         end
         emoji = get(emoji_symbols, s, "")
         if !isempty(emoji)
@@ -880,5 +906,23 @@ function shell_completions(string, pos)
     end
     return Completion[], 0:-1, false
 end
+
+@static if isdefined(Base.Experimental, :register_error_hint)
+
+function UndefVarError_hint(io::IO, ex::UndefVarError)
+    var = ex.var
+    if var === :or
+        print("\nsuggestion: Use `||` for short-circuiting boolean OR.")
+    elseif var === :and
+        print("\nsuggestion: Use `&&` for short-circuiting boolean AND.")
+    end
+end
+
+function __init__()
+    Base.Experimental.register_error_hint(UndefVarError_hint, UndefVarError)
+    nothing
+end
+
+end # @static if isdefined(Base.Experimental, :register_error_hint)
 
 end # module
