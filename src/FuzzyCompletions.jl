@@ -138,15 +138,8 @@ score(c::Completion) = c.score
 score(c::MethodCompletion) = 0.0
 score(c::ShellCompletion) = 0.0
 
-function appendmacro!(syms, macros, needle, endchar)
-    for s in macros
-        if endswith(s, needle)
-            from = nextind(s, firstindex(s))
-            to = prevind(s, sizeof(s)-sizeof(needle)+1)
-            push!(syms, s[from:to]*endchar)
-        end
-    end
-end
+import REPL.REPLCompletions:
+    appendmacro!
 
 function filtered_mod_names(ffunc::Function, mod::Module, name::AbstractString, all::Bool = false, imported::Bool = false)
     ssyms = names(mod, all = all, imported = imported)
@@ -234,13 +227,8 @@ function complete_symbol(sym, ffunc, context_module=Main)::Vector{Completion}
     suggestions
 end
 
-const sorted_keywords = [
-    "abstract type", "baremodule", "begin", "break", "catch", "ccall",
-    "const", "continue", "do", "else", "elseif", "end", "export", "false",
-    "finally", "for", "function", "global", "if", "import",
-    "let", "local", "macro", "module", "mutable struct",
-    "primitive type", "quote", "return", "struct",
-    "true", "try", "using", "while"]
+import REPL.REPLCompletions:
+    sorted_keywords
 
 # NOTE:
 # I would like to be a bit strict on `KeywordCompletion`s:
@@ -346,191 +334,11 @@ function complete_expanduser(path::AbstractString, r)
     return Completion[PathCompletion(expanded)], r, path != expanded
 end
 
-# Determines whether method_complete should be tried. It should only be done if
-# the string endswiths ',' or '(' when disregarding whitespace_chars
-function should_method_complete(s::AbstractString)
-    method_complete = false
-    for c in reverse(s)
-        if c in [',', ';', '(']
-            method_complete = true
-            break
-        elseif !(c in whitespace_chars)
-            method_complete = false
-            break
-        end
-    end
-    method_complete
-end
-
-# Returns a range that includes the method name in front of the first non
-# closed start brace from the end of the string.
-function find_start_brace(s::AbstractString; c_start='(', c_end=')')
-    braces = 0
-    r = reverse(s)
-    i = firstindex(r)
-    in_single_quotes = false
-    in_double_quotes = false
-    in_back_ticks = false
-    while i <= ncodeunits(r)
-        c, i = iterate(r, i)
-        if !in_single_quotes && !in_double_quotes && !in_back_ticks
-            if c == c_start
-                braces += 1
-            elseif c == c_end
-                braces -= 1
-            elseif c == '\''
-                in_single_quotes = true
-            elseif c == '"'
-                in_double_quotes = true
-            elseif c == '`'
-                in_back_ticks = true
-            end
-        else
-            if !in_back_ticks && !in_double_quotes &&
-                c == '\'' && i <= ncodeunits(r) && iterate(r, i)[1] != '\\'
-                in_single_quotes = !in_single_quotes
-            elseif !in_back_ticks && !in_single_quotes &&
-                c == '"' && i <= ncodeunits(r) && iterate(r, i)[1] != '\\'
-                in_double_quotes = !in_double_quotes
-            elseif !in_single_quotes && !in_double_quotes &&
-                c == '`' && i <= ncodeunits(r) && iterate(r, i)[1] != '\\'
-                in_back_ticks = !in_back_ticks
-            end
-        end
-        braces == 1 && break
-    end
-    braces != 1 && return 0:-1, -1
-    method_name_end = reverseind(s, i)
-    startind = nextind(s, something(findprev(in(non_identifier_chars), s, method_name_end), 0))::Int
-    return (startind:lastindex(s), method_name_end)
-end
-
-# Returns the value in a expression if sym is defined in current namespace fn.
-# This method is used to iterate to the value of a expression like:
-# :(REPL.REPLCompletions.whitespace_chars) a `dump` of this expression
-# will show it consist of Expr, QuoteNode's and Symbol's which all needs to
-# be handled differently to iterate down to get the value of whitespace_chars.
-function get_value(sym::Expr, fn)
-    sym.head !== :. && return (nothing, false)
-    for ex in sym.args
-        fn, found = get_value(ex, fn)
-        !found && return (nothing, false)
-    end
-    return (fn, true)
-end
-get_value(sym::Symbol, fn) = isdefined(fn, sym) ? (getfield(fn, sym), true) : (nothing, false)
-get_value(sym::QuoteNode, fn) = isdefined(fn, sym.value) ? (getfield(fn, sym.value), true) : (nothing, false)
-get_value(sym::GlobalRef, fn) = get_value(sym.name, sym.mod)
-get_value(sym, fn) = (sym, true)
-
-# Return the value of a getfield call expression
-# Return the type of a getfield call expression
-function get_type_getfield(ex::Expr, fn::Module)
-    length(ex.args) == 3 || return Any, false # should never happen, but just for safety
-    obj, x = ex.args[2:3]
-    objt, found = get_type(obj, fn)
-    objt isa DataType || return Any, false
-    found || return Any, false
-    if x isa QuoteNode
-        fld = x.value
-    elseif isexpr(x, :quote) || isexpr(x, :inert)
-        fld = x.args[1]
-    else
-        fld = nothing # we don't know how to get the value of variable `x` here
-    end
-    fld isa Symbol || return Any, false
-    hasfield(objt, fld) || return Any, false
-    return fieldtype(objt, fld), true
-end
-
-# Determines the return type with Base.return_types of a function call using the type information of the arguments.
-function get_type_call(expr::Expr)
-    f_name = expr.args[1]
-    # The if statement should find the f function. How f is found depends on how f is referenced
-    if isa(f_name, GlobalRef) && isconst(f_name.mod,f_name.name) && isdefined(f_name.mod,f_name.name)
-        ft = typeof(eval(f_name))
-        found = true
-    else
-        ft, found = get_type(f_name, Main)
-    end
-    found || return (Any, false) # If the function f is not found return Any.
-    args = Any[]
-    for ex in expr.args[2:end] # Find the type of the function arguments
-        typ, found = get_type(ex, Main)
-        found ? push!(args, typ) : push!(args, Any)
-    end
-    @static if isdefined(Core.Compiler, :NativeInterpreter)
-        # use _methods_by_ftype as the function is supplied as a type
-        world = Base.get_world_counter()
-        matches = Base._methods_by_ftype(Tuple{ft, args...}, -1, world)::Vector
-        length(matches) == 1 || return (Any, false)
-        match = first(matches)::Core.MethodMatch
-        # Typeinference
-        interp = Core.Compiler.NativeInterpreter()
-        return_type = Core.Compiler.typeinf_type(interp, match.method, match.spec_types, match.sparams)
-        return_type === nothing && return (Any, false)
-        return (return_type, true)
-    else
-        world = @static isdefined(Base, :get_world_counter) ? Base.get_world_counter() : ccall(:jl_get_world_counter, UInt, ())
-        mt = Base._methods_by_ftype(Tuple{ft, args...}, -1, world)
-        length(mt) == 1 || return (Any, false)
-        m = first(mt)
-        # Typeinference
-        params = Core.Compiler.Params(world)
-        return_type = Core.Compiler.typeinf_type(m[3], m[1], m[2], params)
-        return_type === nothing && return (Any, false)
-        return (return_type, true)
-    end
-end
-
-# Returns the return type. example: get_type(:(Base.strip("", ' ')), Main) returns (SubString{String}, true)
-function try_get_type(sym::Expr, fn::Module)
-    val, found = get_value(sym, fn)
-    found && return Base.typesof(val).parameters[1], found
-    if sym.head === :call
-        # getfield call is special cased as the evaluation of getfield provides good type information,
-        # is inexpensive and it is also performed in the complete_symbol function.
-        a1 = sym.args[1]
-        if a1 === :getfield || a1 === GlobalRef(Core, :getfield)
-            return get_type_getfield(sym, fn)
-        end
-        return get_type_call(sym)
-    elseif sym.head === :thunk
-        thk = sym.args[1]
-        rt = ccall(:jl_infer_thunk, Any, (Any, Any), thk::Core.CodeInfo, fn)
-        rt !== Any && return (rt, true)
-    elseif sym.head === :ref
-        # some simple cases of `expand`
-        return try_get_type(Expr(:call, GlobalRef(Base, :getindex), sym.args...), fn)
-    elseif sym.head === :.  && sym.args[2] isa QuoteNode # second check catches broadcasting
-        return try_get_type(Expr(:call, GlobalRef(Core, :getfield), sym.args...), fn)
-    end
-    return (Any, false)
-end
-
-try_get_type(other, fn::Module) = get_type(other, fn)
-
-function get_type(sym::Expr, fn::Module)
-    # try to analyze nests of calls. if this fails, try using the expanded form.
-    val, found = try_get_type(sym, fn)
-    found && return val, found
-     # https://github.com/JuliaLang/julia/issues/27184
-     if isexpr(sym, :macrocall)
-        _, found = get_type(first(sym.args), fn)
-        found || return Any, false
-    end
-    return try_get_type(Meta.lower(fn, sym), fn)
-end
-
-function get_type(sym, fn::Module)
-    val, found = get_value(sym, fn)
-    return found ? Base.typesof(val).parameters[1] : Any, found
-end
-
-function get_type(T, found::Bool, default_any::Bool)
-    return found ? T :
-           default_any ? Any : throw(ArgumentError("argument not found"))
-end
+import REPL.REPLCompletions:
+    should_method_complete,
+    find_start_brace,
+    get_value,
+    get_type
 
 # Method completion on function call expression that look like :(max(1))
 function complete_methods(ex_org::Expr, context_module::Module=Main)
@@ -632,33 +440,17 @@ function complete_methods!(out::Vector{Completion}, @nospecialize(func), args_ex
     end
 end
 
-using REPL.REPLCompletions: latex_symbols
-using REPL.REPLCompletions: emoji_symbols
-
-const non_identifier_chars = [" \t\n\r\"\\'`\$><=:;|&{}()[],+-*/?%^~"...]
-const whitespace_chars = [" \t\n\r"...]
-# "\"'`"... is added to whitespace_chars as non of the bslash_completions
-# characters contain any of these characters. It prohibits the
-# bslash_completions function to try and complete on escaped characters in strings
-const bslash_separators = [whitespace_chars..., "\"'`"...]
-
-const subscripts = Dict(k[3]=>v[1] for (k,v) in latex_symbols if startswith(k, "\\_") && length(k)==3)
-const subscript_regex = Regex("^\\\\_[" * join(isdigit(k) || isletter(k) ? "$k" : "\\$k" for k in keys(subscripts)) * "]+\\z")
-const superscripts = Dict(k[3]=>v[1] for (k,v) in latex_symbols if startswith(k, "\\^") && length(k)==3)
-const superscript_regex = Regex("^\\\\\\^[" * join(isdigit(k) || isletter(k) ? "$k" : "\\$k" for k in keys(superscripts)) * "]+\\z")
-
-# Aux function to detect whether we're right after a
-# using or import keyword
-function afterusing(string::String, startpos::Int)
-    (isempty(string) || startpos == 0) && return false
-    str = string[1:prevind(string,startpos)]
-    isempty(str) && return false
-    rstr = reverse(str)
-    r = findfirst(r"\s(gnisu|tropmi)\b", rstr)
-    r === nothing && return false
-    fr = reverseind(str, last(r))
-    return occursin(r"^\b(using|import)\s*((\w+[.])*\w+\s*,\s*)*$", str[fr:end])
-end
+import REPL.REPLCompletions:
+    latex_symbols,
+    emoji_symbols,
+    non_identifier_chars,
+    whitespace_chars,
+    bslash_separators,
+    subscripts,
+    subscript_regex,
+    superscripts,
+    superscript_regex,
+    afterusing
 
 function bslash_completions(string, pos)
     slashpos = something(findprev(isequal('\\'), string, pos), 0)
@@ -982,23 +774,5 @@ function shell_completions(string, pos)
     end
     return Completion[], 0:-1, false
 end
-
-@static if isdefined(Base.Experimental, :register_error_hint)
-
-function UndefVarError_hint(io::IO, ex::UndefVarError)
-    var = ex.var
-    if var === :or
-        print("\nsuggestion: Use `||` for short-circuiting boolean OR.")
-    elseif var === :and
-        print("\nsuggestion: Use `&&` for short-circuiting boolean AND.")
-    end
-end
-
-function __init__()
-    Base.Experimental.register_error_hint(UndefVarError_hint, UndefVarError)
-    nothing
-end
-
-end # @static if isdefined(Base.Experimental, :register_error_hint)
 
 end # module
