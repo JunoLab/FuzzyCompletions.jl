@@ -19,6 +19,11 @@ fuzzyscore(needle, haystack) = fuzzyscore(string(needle), string(haystack))
 
 abstract type Completion end
 
+# NOTE no fuzzyness
+struct TextCompletion <: Completion
+    text::String
+end
+
 struct KeywordCompletion <: Completion
     keyword::String
     score::Float64
@@ -64,12 +69,11 @@ end
 FieldCompletion(typ::DataType, field::Symbol) = FieldCompletion(typ, field, Inf)
 FieldCompletion(typ::DataType, field::Symbol, needle) = FieldCompletion(typ, field, fuzzyscore(needle, field))
 
-# NOTE: no fuzzyness is needed for this
+# NOTE no fuzzyness
 struct MethodCompletion <: Completion
-    func
-    input_types::Type
+    tt
     method::Method
-    orig_method::Union{Nothing,Method}
+    MethodCompletion(@nospecialize(tt), method::Method) = new(tt, method)
 end
 
 struct BslashCompletion <: Completion
@@ -93,7 +97,9 @@ DictCompletion(dict::AbstractDict, key::String, needle) = DictCompletion(dict, k
 
 # interface definition
 function Base.getproperty(c::Completion, name::Symbol)
-    if name === :keyword
+    if name === :text
+        return getfield(c, :text)::String
+    elseif name === :keyword
         return getfield(c, :keyword)::String
     elseif name === :path
         return getfield(c, :path)::String
@@ -119,13 +125,14 @@ function Base.getproperty(c::Completion, name::Symbol)
     return getfield(c, name)
 end
 
+_completion_text(c::TextCompletion) = c.text
 _completion_text(c::KeywordCompletion) = c.keyword
 _completion_text(c::PathCompletion) = c.path
 _completion_text(c::ModuleCompletion) = c.mod
 _completion_text(c::PackageCompletion) = c.package
 _completion_text(c::PropertyCompletion) = string(c.property)
 _completion_text(c::FieldCompletion) = string(c.field)
-_completion_text(c::MethodCompletion) = sprint(io -> show(io, isnothing(c.orig_method) ? c.method : c.orig_method::Method))
+_completion_text(c::MethodCompletion) = repr(c.method)
 _completion_text(c::BslashCompletion) = c.bslash
 _completion_text(c::ShellCompletion) = c.text
 _completion_text(c::DictCompletion) = c.key
@@ -135,6 +142,7 @@ completion_text(c) = _completion_text(c)::String
 const Completions = Tuple{Vector{Completion}, UnitRange{Int}, Bool}
 
 score(c::Completion) = c.score
+score(c::TextCompletion) = 0.0
 score(c::MethodCompletion) = 0.0
 score(c::ShellCompletion) = 0.0
 
@@ -153,7 +161,7 @@ function filtered_mod_names(ffunc::Function, mod::Module, name::AbstractString, 
 end
 
 # REPL Symbol Completions
-function complete_symbol(sym, ffunc, context_module=Main)::Vector{Completion}
+function complete_symbol(sym, @nospecialize(ffunc), context_module=Main)::Vector{Completion}
     mod = context_module
     name = sym
 
@@ -338,109 +346,7 @@ import REPL.REPLCompletions:
     should_method_complete,
     find_start_brace,
     get_value,
-    get_type
-
-# Method completion on function call expression that look like :(max(1))
-function complete_methods(ex_org::Expr, context_module::Module=Main)
-    func, found = get_value(ex_org.args[1], context_module)::Tuple{Any,Bool}
-    !found && return Completion[]
-
-    args_ex, kwargs_ex = complete_methods_args(ex_org.args[2:end], ex_org, context_module, true, true)
-
-    out = Completion[]
-    complete_methods!(out, func, args_ex, kwargs_ex)
-    return out
-end
-
-function complete_any_methods(ex_org::Expr, callee_module::Module, context_module::Module, moreargs::Bool)
-    out = Completion[]
-    args_ex, kwargs_ex = try
-        complete_methods_args(ex_org.args[2:end], ex_org, context_module, false, false)
-    catch
-        return out
-    end
-
-    for name in names(callee_module; all=true)
-        if !Base.isdeprecated(callee_module, name) && isdefined(callee_module, name)
-            func = getfield(callee_module, name)
-            if !isa(func, Module)
-                complete_methods!(out, func, args_ex, kwargs_ex, moreargs)
-            elseif callee_module === Main::Module && isa(func, Module)
-                callee_module2 = func
-                for name in names(callee_module2)
-                    if isdefined(callee_module2, name)
-                        func = getfield(callee_module, name)
-                        if !isa(func, Module)
-                            complete_methods!(out, func, args_ex, kwargs_ex, moreargs)
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    return out
-end
-
-function complete_methods_args(funargs::Vector{Any}, ex_org::Expr, context_module::Module, default_any::Bool, allow_broadcasting::Bool)
-    args_ex = Any[]
-    kwargs_ex = Pair{Symbol,Any}[]
-    if allow_broadcasting && ex_org.head === :. && ex_org.args[2] isa Expr
-        # handle broadcasting, but only handle number of arguments instead of
-        # argument types
-        for _ in (ex_org.args[2]::Expr).args
-            push!(args_ex, Any)
-        end
-    else
-        for ex in funargs
-            if isexpr(ex, :parameters)
-                for x in ex.args
-                    n, v = isexpr(x, :kw) ? (x.args...,) : (x, x)
-                    push!(kwargs_ex, n => get_type(get_type(v, context_module)..., default_any))
-                end
-            elseif isexpr(ex, :kw)
-                n, v = (ex.args...,)
-                push!(kwargs_ex, n => get_type(get_type(v, context_module)..., default_any))
-            else
-                push!(args_ex, get_type(get_type(ex, context_module)..., default_any))
-            end
-        end
-    end
-    return args_ex, kwargs_ex
-end
-
-function complete_methods!(out::Vector{Completion}, @nospecialize(func), args_ex::Vector{Any}, kwargs_ex::Vector{Pair{Symbol,Any}}, moreargs::Bool=true)
-    ml = methods(func)
-    # Input types and number of arguments
-    if isempty(kwargs_ex)
-        t_in = Tuple{Core.Typeof(func), args_ex...}
-        na = length(t_in.parameters)::Int
-        orig_ml = fill(nothing, length(ml))
-    else
-        isdefined(ml.mt, :kwsorter) || return out # kwargs given, but no kwarg method found
-        kwfunc = ml.mt.kwsorter
-        kwargt = NamedTuple{(first.(kwargs_ex)...,), Tuple{last.(kwargs_ex)...}}
-        t_in = Tuple{Core.Typeof(kwfunc), kwargt, Core.Typeof(func), args_ex...}
-        na = length(t_in.parameters)::Int
-        orig_ml = ml
-        ml = methods(kwfunc)
-        func = kwfunc
-    end
-    if !moreargs
-        na = typemax(Int)
-    end
-
-    for (method::Method, orig_method) in zip(ml, orig_ml)
-        ms = method.sig
-
-        # Check if the method's type signature intersects the input types
-        if typeintersect(Base.rewrap_unionall(Tuple{(Base.unwrap_unionall(ms)::DataType).parameters[1 : min(na, end)]...}, ms), t_in) != Union{}
-            push!(out, MethodCompletion(func, t_in, method, orig_method))
-        end
-    end
-end
-
-import REPL.REPLCompletions:
+    get_type,
     latex_symbols,
     emoji_symbols,
     non_identifier_chars,
@@ -450,7 +356,34 @@ import REPL.REPLCompletions:
     subscript_regex,
     superscripts,
     superscript_regex,
-    afterusing
+    afterusing,
+    dict_identifier_key
+
+# bypass to REPL.REPLCompletions.complete_methods
+function complete_methods(ex_org::Expr, context_module::Module=Main)
+    out = REPL.REPLCompletions.complete_methods(ex_org, context_module)
+    newout = Completion[]
+    for c in out
+        if isa(c, REPL.REPLCompletions.MethodCompletion)
+            @static if VERSION ≥ v"1.8.0-DEV.1419"
+                push!(newout, MethodCompletion(c.tt, c.method))
+            else
+                push!(newout, MethodCompletion(c.input_types, c.method))
+            end
+        elseif isa(c, REPL.REPLCompletions.TextCompletion)
+            push!(newout, TextCompletion(c.text))
+        else
+            throw("FuzzyCompletions.jl not synced with REPL.REPLCompletions")
+        end
+    end
+    return newout
+end
+
+# bypass to REPL.REPLCompletions.complete_any_methods
+function complete_any_methods(ex_org::Expr, callee_module::Module, context_module::Module, moreargs::Bool, shift::Bool)
+    out = REPL.REPLCompletions.complete_any_methods(ex_org, callee_module, context_module, moreargs, shift)
+
+end
 
 function close_path_completion(str, startpos, r, paths, pos)
     length(paths) == 1 || return false  # Only close if there's a single choice...
@@ -492,30 +425,6 @@ function bslash_completions(string, pos)
         return (true, (sort_suggestions!(suggestions), slashpos:pos, true))
     end
     return (false, (Completion[], 0:-1, false))
-end
-
-function dict_identifier_key(str, tag, context_module = Main)
-    if tag === :string
-        str_close = str*"\""
-    elseif tag === :cmd
-        str_close = str*"`"
-    else
-        str_close = str
-    end
-
-    frange, end_of_identifier = find_start_brace(str_close, c_start='[', c_end=']')
-    isempty(frange) && return (nothing, nothing, nothing)
-    obj = context_module
-    for name in split(str[frange[1]:end_of_identifier], '.')
-        Base.isidentifier(name) || return (nothing, nothing, nothing)
-        sym = Symbol(name)
-        isdefined(obj, sym) || return (nothing, nothing, nothing)
-        obj = getfield(obj, sym)
-    end
-    (isa(obj, AbstractDict) && length(obj)::Int < 1_000_000) || return (nothing, nothing, nothing)
-    begin_of_key = something(findnext(!isspace, str, nextind(str, end_of_identifier) + 1), # +1 for [
-                             lastindex(str)+1)
-    return (obj::AbstractDict, str[begin_of_key:end], begin_of_key)
 end
 
 # This needs to be a separate non-inlined function, see #19441
@@ -718,19 +627,21 @@ function completions(string, pos, context_module = Main)
     dotpos < startpos && (dotpos = startpos - 1)
     s = string[startpos:pos]
     comp_keywords && append!(suggestions, complete_keyword(s))
-    # The case where dot and start pos is equal could look like: "(""*"").d","". or  CompletionFoo.test_y_array[1].y
-    # This case can be handled by finding the beginning of the expression. This is done below.
-    if dotpos == startpos
+    # if the start of the string is a `.`, try to consume more input to get back to the beginning of the last expression
+    if 0 < startpos <= lastindex(string) && string[startpos] == '.'
         i = prevind(string, startpos)
         while 0 < i
             c = string[i]
-            if c in [')', ']']
-                if c==')'
-                    c_start='('; c_end=')'
-                elseif c==']'
-                    c_start='['; c_end=']'
+            if c in (')', ']')
+                if c == ')'
+                    c_start = '('
+                    c_end = ')'
+                elseif c == ']'
+                    c_start = '['
+                    c_end = ']'
                 end
                 frange, end_of_identifier = find_start_brace(string[1:prevind(string, i)], c_start=c_start, c_end=c_end)
+                isempty(frange)  && break # unbalanced parens
                 startpos = first(frange)
                 i = prevind(string, startpos)
             elseif c in ['\'', '\"', '\`']
