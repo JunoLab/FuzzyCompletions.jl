@@ -27,47 +27,47 @@ end
 struct KeywordCompletion <: Completion
     keyword::String
     score::Float64
+    KeywordCompletion(keyword::String) = new(keyword, Inf)
+    KeywordCompletion(keyword::String, needle) = new(keyword, fuzzyscore(needle, keyword))
 end
-KeywordCompletion(keyword::String) = KeywordCompletion(keyword, Inf)
-KeywordCompletion(keyword::String, needle) = KeywordCompletion(keyword, fuzzyscore(needle, keyword))
 
 struct PathCompletion <: Completion
     path::String
     score::Float64
+    PathCompletion(path::String) = new(path, Inf)
+    PathCompletion(path::String, needle) = new(path, fuzzyscore(needle, path))
 end
-PathCompletion(path::String) = PathCompletion(path, Inf)
-PathCompletion(path::String, needle) = PathCompletion(path, fuzzyscore(needle, path))
 
 struct ModuleCompletion <: Completion
     parent::Module
     mod::String
     score::Float64
+    ModuleCompletion(parent::Module, mod::String) = new(parent, mod, Inf)
+    ModuleCompletion(parent::Module, mod::String, needle) = new(parent, mod, fuzzyscore(needle, mod))
 end
-ModuleCompletion(parent::Module, mod::String) = ModuleCompletion(parent, mod, Inf)
-ModuleCompletion(parent::Module, mod::String, needle) = ModuleCompletion(parent, mod, fuzzyscore(needle, mod))
 
 struct PackageCompletion <: Completion
     package::String
     score::Float64
+    PackageCompletion(package::String) = new(package, Inf)
+    PackageCompletion(package::String, needle) = new(package, fuzzyscore(needle, package))
 end
-PackageCompletion(package::String) = PackageCompletion(package, Inf)
-PackageCompletion(package::String, needle) = PackageCompletion(package, fuzzyscore(needle, package))
 
 struct PropertyCompletion <: Completion
     value
     property::Symbol
     score::Float64
+    PropertyCompletion(value, property::Symbol) = new(value, property, Inf)
+    PropertyCompletion(value, property::Symbol, needle) = new(value, property, fuzzyscore(needle, property))
 end
-PropertyCompletion(value, property::Symbol) = PropertyCompletion(value, property, Inf)
-PropertyCompletion(value, property::Symbol, needle) = PropertyCompletion(value, property, fuzzyscore(needle, property))
 
 struct FieldCompletion <: Completion
     typ::DataType
     field::Symbol
     score::Float64
+    FieldCompletion(typ::DataType, field::Symbol) = new(typ, field, Inf)
+    FieldCompletion(typ::DataType, field::Symbol, needle) = new(typ, field, fuzzyscore(needle, field))
 end
-FieldCompletion(typ::DataType, field::Symbol) = FieldCompletion(typ, field, Inf)
-FieldCompletion(typ::DataType, field::Symbol, needle) = FieldCompletion(typ, field, fuzzyscore(needle, field))
 
 # NOTE no fuzzyness
 struct MethodCompletion <: Completion
@@ -79,9 +79,9 @@ end
 struct BslashCompletion <: Completion
     bslash::String
     score::Float64
+    BslashCompletion(bslash::String) = new(bslash, Inf)
+    BslashCompletion(bslash::String, needle) = new(bslash, fuzzyscore(needle, bslash))
 end
-BslashCompletion(bslash::String) = BslashCompletion(bslash, Inf)
-BslashCompletion(bslash::String, needle) = BslashCompletion(bslash, fuzzyscore(needle, bslash))
 
 struct ShellCompletion <: Completion
     text::String
@@ -91,13 +91,22 @@ struct DictCompletion <: Completion
     dict::AbstractDict
     key::String
     score::Float64
+    DictCompletion(dict::AbstractDict, key::String) = new(dict, key, Inf)
+    DictCompletion(dict::AbstractDict, key::String, needle) = new(dict, key, fuzzyscore(needle, key))
 end
-DictCompletion(dict::AbstractDict, key::String) = DictCompletion(dict, key, Inf)
-DictCompletion(dict::AbstractDict, key::String, needle) = DictCompletion(dict, key, fuzzyscore(needle, key))
+
+struct KeywordArgumentCompletion <: Completion
+    kwarg::String
+    score::Float64
+    KeywordArgumentCompletion(kwarg::String) = new(kwarg, Inf)
+    KeywordArgumentCompletion(kwarg::String, needle) = new(kwarg, fuzzyscore(kwarg, needle))
+end
 
 # interface definition
-function Base.getproperty(c::Completion, name::Symbol)
-    if name === :text
+function Base.getproperty(@nospecialize(c::Completion), name::Symbol)
+    if name === :score
+        return getfield(c, :score)::Float64
+    elseif name === :text
         return getfield(c, :text)::String
     elseif name === :keyword
         return getfield(c, :keyword)::String
@@ -136,8 +145,9 @@ _completion_text(c::MethodCompletion) = repr(c.method)
 _completion_text(c::BslashCompletion) = c.bslash
 _completion_text(c::ShellCompletion) = c.text
 _completion_text(c::DictCompletion) = c.key
+_completion_text(c::KeywordArgumentCompletion) = c.kwarg*'='
 
-completion_text(c) = _completion_text(c)::String
+completion_text(@nospecialize c::Completion) = _completion_text(c)::String
 
 const Completions = Tuple{Vector{Completion}, UnitRange{Int}, Bool}
 
@@ -343,7 +353,6 @@ function complete_expanduser(path::AbstractString, r)
 end
 
 import REPL.REPLCompletions:
-    should_method_complete,
     find_start_brace,
     get_value,
     get_type,
@@ -359,30 +368,90 @@ import REPL.REPLCompletions:
     afterusing,
     dict_identifier_key
 
-# bypass to REPL.REPLCompletions.complete_methods
-function complete_methods(ex_org::Expr, context_module::Module=Main)
-    out = REPL.REPLCompletions.complete_methods(ex_org, context_module)
-    newout = Completion[]
-    for c in out
-        if isa(c, REPL.REPLCompletions.MethodCompletion)
-            @static if VERSION ≥ v"1.8.0-DEV.1419"
-                push!(newout, MethodCompletion(c.tt, c.method))
-            else
-                push!(newout, MethodCompletion(c.input_types, c.method))
+@static if VERSION ≥ v"1.9.0-DEV.1034"
+
+import REPL.REPLCompletions:
+    identify_possible_method_completion,
+    is_broadcasting_expr,
+    _complete_methods,
+    complete_methods!
+
+function complete_keyword_argument(partial, last_idx, context_module)
+    frange, ex, wordrange, = identify_possible_method_completion(partial, last_idx)
+    fail = Completion[], 0:-1, frange
+    ex.head === :call || is_broadcasting_expr(ex) || return fail
+
+    kwargs_flag, funct, args_ex, kwargs_ex = _complete_methods(ex, context_module, true)::Tuple{Int, Any, Vector{Any}, Set{Symbol}}
+    kwargs_flag == 2 && return fail # one of the previous kwargs is invalid
+
+    methods = REPL.REPLCompletions.Completion[]
+    complete_methods!(methods, funct, Any[Vararg{Any}], kwargs_ex, -1, kwargs_flag == 1)
+    # TODO: use args_ex instead of Any[Vararg{Any}] and only provide kwarg completion for
+    # method calls compatible with the current arguments.
+
+    # For each method corresponding to the function call, provide completion suggestions
+    # for each keyword that starts like the last word and that is not already used
+    # previously in the expression. The corresponding suggestion is "kwname=".
+    # If the keyword corresponds to an existing name, also include "kwname" as a suggestion
+    # since the syntax "foo(; kwname)" is equivalent to "foo(; kwname=kwname)".
+    last_word = partial[wordrange] # the word to complete
+    kwargs = Set{String}()
+    for m in methods
+        m::REPL.REPLCompletions.MethodCompletion
+        possible_kwargs = Base.kwarg_decl(m.method)
+        current_kwarg_candidates = String[]
+        for _kw in possible_kwargs
+            kw = String(_kw)
+            if !endswith(kw, "...") && startswith(kw, last_word) && _kw ∉ kwargs_ex
+                push!(current_kwarg_candidates, kw)
             end
-        elseif isa(c, REPL.REPLCompletions.TextCompletion)
-            push!(newout, TextCompletion(c.text))
-        else
-            throw("FuzzyCompletions.jl not synced with REPL.REPLCompletions")
         end
+        union!(kwargs, current_kwarg_candidates)
     end
-    return newout
+
+    suggestions = Completion[KeywordArgumentCompletion(kwarg, partial) for kwarg in kwargs]
+    # append!(suggestions, complete_symbol(last_word, Returns(true), context_module))
+
+    return sort!(suggestions, by=completion_text), wordrange
+end
+
+else # @static if VERSION ≥ v"1.9.0-DEV.1034"
+
+import REPL.REPLCompletions:
+    should_method_complete
+
+end # @static if VERSION ≥ v"1.9.0-DEV.1034"
+
+function transform_to_fuzzy_completion(@nospecialize c)
+    if isa(c, REPL.REPLCompletions.MethodCompletion)
+        @static if VERSION ≥ v"1.8.0-DEV.1419"
+            return MethodCompletion(c.tt, c.method)
+        else
+            return MethodCompletion(c.input_types, c.method)
+        end
+    elseif isa(c, REPL.REPLCompletions.TextCompletion)
+        return TextCompletion(c.text)
+    elseif @static VERSION ≥ v"1.9.0-DEV.1034" && isa(c, REPL.REPLCompletions.KeywordArgumentCompletion)
+        return KeywordArgumentCompletion(c.kwarg)
+    else
+        throw("FuzzyCompletions.jl not synced with REPL.REPLCompletions")
+    end
+end
+
+# bypass to REPL.REPLCompletions.complete_methods
+function complete_methods(ex_org::Expr, context_module::Module=Main, shift::Bool=false)
+    @static if hasmethod(REPL.REPLCompletions.complete_methods, (Expr,Module,Bool))
+        out = REPL.REPLCompletions.complete_methods(ex_org, context_module, shift)
+    else
+        out = REPL.REPLCompletions.complete_methods(ex_org, context_module)
+    end
+    return Completion[transform_to_fuzzy_completion(c) for c in out]
 end
 
 # bypass to REPL.REPLCompletions.complete_any_methods
 function complete_any_methods(ex_org::Expr, callee_module::Module, context_module::Module, moreargs::Bool, shift::Bool)
     out = REPL.REPLCompletions.complete_any_methods(ex_org, callee_module, context_module, moreargs, shift)
-
+    return Completion[transform_to_fuzzy_completion(c) for c in out]
 end
 
 function close_path_completion(str, startpos, r, paths, pos)
@@ -475,7 +544,7 @@ end
 
 end # @static if isdefined(Base, :TOML)
 
-function completions(string, pos, context_module = Main)
+function completions(string::String, pos::Int, context_module::Module = Main, shift::Bool=true)
     # First parse everything up to the current position
     partial = string[1:pos]
     inc_tag = Base.incomplete_tag(Meta.parse(partial, raise=false, depwarn=false))
@@ -506,7 +575,7 @@ function completions(string, pos, context_module = Main)
         end
         ex_org = Meta.parse(callstr, raise=false, depwarn=false)
         if isa(ex_org, Expr)
-            return complete_any_methods(ex_org, callee_module::Module, context_module, moreargs), (0:length(rexm.captures[1])+1) .+ rexm.offset, false
+            return complete_any_methods(ex_org, callee_module::Module, context_module, moreargs, shift), (0:length(rexm.captures[1])+1) .+ rexm.offset, false
         end
     end
 
@@ -553,7 +622,16 @@ function completions(string, pos, context_module = Main)
 
     # Make sure that only bslash_completions is working on strings
     inc_tag==:string && return Completion[], 0:-1, false
-    if inc_tag === :other && should_method_complete(partial)
+    if @static VERSION ≥ v"1.9.0-DEV.1034" && inc_tag === :other
+        frange, ex, wordrange, method_name_end = identify_possible_method_completion(partial, pos)
+        if last(frange) != -1 && all(isspace, @view partial[wordrange]) # no last argument to complete
+            if ex.head === :call
+                return complete_methods(ex, context_module, shift), first(frange):method_name_end, false
+            elseif is_broadcasting_expr(ex)
+                return complete_methods(ex, context_module, shift), first(frange):(method_name_end - 1), false
+            end
+        end
+    elseif @static VERSION < v"1.9.0-DEV.1034" && inc_tag === :other && should_method_complete(partial)
         frange, method_name_end = find_start_brace(partial)
         # strip preceding ! operator
         s = replace(partial[frange], r"\!+([^=\(]+)" => s"\1")
@@ -571,6 +649,12 @@ function completions(string, pos, context_module = Main)
         end
     elseif inc_tag === :comment
         return Completion[], 0:-1, false
+    end
+
+    @static if VERSION ≥ v"1.9.0-DEV.1034"
+    # Check whether we can complete a keyword argument in a function call
+    kwarg_completion, wordrange = complete_keyword_argument(partial, pos, context_module)
+    isempty(wordrange) || return kwarg_completion, wordrange, !isempty(kwarg_completion)
     end
 
     dotpos = something(findprev(isequal('.'), string, pos), 0)
