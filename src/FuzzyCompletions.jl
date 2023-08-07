@@ -184,21 +184,39 @@ function complete_symbol(sym, @nospecialize(ffunc), context_module=Main)::Vector
 
         ex = Meta.parse(lookup_name, raise=false, depwarn=false)
 
-        b, found = get_value(ex, context_module)
-        if found
-            val = b
-            if isa(b, Module)
-                mod = b
-                lookup_module = true
-            elseif Base.isstructtype(typeof(b))
+        @static if VERSION ≥ v"1.10.0-DEV.941"
+            res = repl_eval_ex(ex, context_module)
+            res === nothing && return Completion[]
+            if res isa Const
+                val = res.val
+                if isa(val, Module)
+                    mod = val
+                    lookup_module = true
+                else
+                    lookup_module = false
+                    t = typeof(val)
+                end
+            else
                 lookup_module = false
-                t = typeof(b)
+                t = Core.Compiler.widenconst(res)
             end
-        else # If the value is not found using get_value, the expression contain an advanced expression
-            lookup_module = false
-            t, found = get_type(ex, context_module)
+        else
+            b, found = get_value(ex, context_module)
+            if found
+                val = b
+                if isa(b, Module)
+                    mod = b
+                    lookup_module = true
+                elseif Base.isstructtype(typeof(b))
+                    lookup_module = false
+                    t = typeof(b)
+                end
+            else # If the value is not found using get_value, the expression contain an advanced expression
+                lookup_module = false
+                t, found = get_type(ex, context_module)
+            end
+            found || return Completion[]
         end
-        found || return Completion[]
         # Ensure REPLCompletion do not crash when asked to complete a tuple, #15329
         !lookup_module && t <: Tuple && return Completion[]
     end
@@ -354,8 +372,6 @@ end
 
 import REPL.REPLCompletions:
     find_start_brace,
-    get_value,
-    get_type,
     latex_symbols,
     emoji_symbols,
     non_identifier_chars,
@@ -367,6 +383,17 @@ import REPL.REPLCompletions:
     superscript_regex,
     afterusing,
     dict_identifier_key
+
+@static if VERSION ≥ v"1.10.0-DEV.941"
+
+import REPL.REPLCompletions: repl_eval_ex
+import Core: Const
+
+else
+
+import REPL.REPLCompletions: get_value, get_type
+
+end
 
 @static if VERSION ≥ v"1.9.0-DEV.1034"
 
