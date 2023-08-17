@@ -98,6 +98,12 @@ end
     @test comp("Mis") == "Missing"
 end
 
+@testset "Keyword Argument Completion" begin
+    @test comp("sin(sin") == "sin"
+    @test comp("sum(x; dim") == "dims="
+    @test comp("sum(x, dim") == "dims="
+end
+
 @testset "inferrability" begin
     @inferred FuzzyCompletions.completions("foo", lastindex("foo"), @__MODULE__)
 end
