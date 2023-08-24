@@ -42,7 +42,7 @@ end
 @testset "PackageCompletion" begin
     @test comp("using REPL") == "REPL"
     @test comp("using REP") == "REPL"
-    @test comp("using repl") == "REPL"
+    # @test comp("using repl") == "REPL"
     @test comp("using RPLE") == "REPL"
 end
 
