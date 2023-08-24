@@ -765,10 +765,14 @@ function completions(string::String, pos::Int, context_module::Module = Main, sh
         end
     end
     append!(suggestions, complete_symbol(s, ffunc, context_module))
-    return sort_suggestions!(suggestions), (dotpos+1):pos, false
+    return sort_suggestions!(suggestions, s), (dotpos+1):pos, false
 end
 
-@inline sort_suggestions!(suggestions) = sort!(suggestions, by=score, rev=true)
+@inline function sort_suggestions!(suggestions, s=nothing)
+    sort!(suggestions, by=score, rev=true)
+    s !== nothing && sort!(suggestions, by=(x)->startswith(completion_text(x), s); rev=true)
+    return suggestions
+end
 
 function shell_completions(string, pos)
     # First parse everything up to the current position
