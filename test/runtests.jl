@@ -61,11 +61,12 @@ end
 end
 
 @testset "FieldCompletion" begin
-    @test "offset" in comps("split(\"\", ' ')[1].")
-    @test "offset" in comps("split(\"\", ' ')[1].offset")
-    @test "offset" in comps("split(\"\", ' ')[1].offsett")
-    @test "offset" in comps("split(\"\", ' ')[1].ofst")
-    @test "offset" in comps("split(\"\", ' ')[1].")
+    skip = VERSION ≥ v"1.11.0-DEV"
+    @test "offset" in comps("split(\"\", ' ')[1].") skip = skip
+    @test "offset" in comps("split(\"\", ' ')[1].offset") skip = skip
+    @test "offset" in comps("split(\"\", ' ')[1].offsett") skip = skip
+    @test "offset" in comps("split(\"\", ' ')[1].ofst") skip = skip
+    @test "offset" in comps("split(\"\", ' ')[1].") skip = skip
 end
 
 @testset "BalashCompletion" begin

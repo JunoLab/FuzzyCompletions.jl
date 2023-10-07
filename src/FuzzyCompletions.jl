@@ -161,6 +161,9 @@ import REPL.REPLCompletions:
 
 function filtered_mod_names(ffunc::Function, mod::Module, name::AbstractString, all::Bool = false, imported::Bool = false)
     ssyms = names(mod, all = all, imported = imported)
+    @static if VERSION ≥ v"1.11.0-DEV.469"
+        all || filter!(Base.Fix1(Base.isexported, mod), ssyms)
+    end
     filter!(ffunc, ssyms)
     syms = String[string(s) for s in ssyms]
     macros = filter(x -> startswith(x, "@" * name), syms)
@@ -181,6 +184,7 @@ function complete_symbol(sym, @nospecialize(ffunc), context_module=Main)::Vector
     if something(findlast(in(non_identifier_chars), sym), 0) < something(findlast(isequal('.'), sym), 0)
         # Find module
         lookup_name, name = rsplit(sym, ".", limit=2)
+        name = String(name)
 
         ex = Meta.parse(lookup_name, raise=false, depwarn=false)
 
@@ -243,24 +247,39 @@ function complete_symbol(sym, @nospecialize(ffunc), context_module=Main)::Vector
             s = string(property)
             push!(suggestions, PropertyCompletion(val, property, name))
         end
-    else
+    elseif field_completion_eligible(t)
         # Looking for a member of a type
-        if t isa DataType && t != Any
-            # Check for cases like Type{typeof(+)}
-            if t isa DataType && t.name === Base._TYPE_NAME
-                t = typeof(t.parameters[1])
-            end
-            # Only look for fields if this is a concrete type
-            if isconcretetype(t)
-                fields = fieldnames(t)
-                for field in fields
-                    s = string(field)
-                    push!(suggestions, FieldCompletion(t, field, name))
-                end
-            end
+        add_field_completions!(suggestions, name, t)
+    end
+    return suggestions
+end
+
+function add_field_completions!(suggestions::Vector{Completion}, name::String, @nospecialize(t))
+    if isa(t, Union)
+        add_field_completions!(suggestions, name, t.a)
+        add_field_completions!(suggestions, name, t.b)
+    else
+        @assert isconcretetype(t)
+        fields = fieldnames(t)
+        for field in fields
+            isa(field, Symbol) || continue # Tuple type has ::Int field name
+            s = string(field)
+            push!(suggestions, FieldCompletion(t, field, name))
         end
     end
-    suggestions
+end
+
+const GENERIC_PROPERTYNAMES_METHOD = which(propertynames, (Any,))
+
+function field_completion_eligible(@nospecialize t)
+    if isa(t, Union)
+        return field_completion_eligible(t.a) && field_completion_eligible(t.b)
+    end
+    isconcretetype(t) || return false
+    # field completion is correct only when `getproperty` fallbacks to `getfield`
+    match = Base._which(Tuple{typeof(propertynames),t}; raise=false)
+    match === nothing && return false
+    return match.method === GENERIC_PROPERTYNAMES_METHOD
 end
 
 import REPL.REPLCompletions:
