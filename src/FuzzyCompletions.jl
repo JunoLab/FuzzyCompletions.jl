@@ -272,6 +272,9 @@ end
 const GENERIC_PROPERTYNAMES_METHOD = which(propertynames, (Any,))
 
 function field_completion_eligible(@nospecialize t)
+    @static if VERSION < v"1.7"
+    return true
+    else
     if isa(t, Union)
         return field_completion_eligible(t.a) && field_completion_eligible(t.b)
     end
@@ -280,6 +283,7 @@ function field_completion_eligible(@nospecialize t)
     match = Base._which(Tuple{typeof(propertynames),t}; raise=false)
     match === nothing && return false
     return match.method === GENERIC_PROPERTYNAMES_METHOD
+    end
 end
 
 import REPL.REPLCompletions:
