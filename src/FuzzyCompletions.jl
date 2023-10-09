@@ -272,7 +272,7 @@ end
 const GENERIC_PROPERTYNAMES_METHOD = which(propertynames, (Any,))
 
 function field_completion_eligible(@nospecialize t)
-    @static if VERSION < v"1.7"
+    @static if VERSION < v"1.10.0-DEV.0"
     return true
     else
     if isa(t, Union)
