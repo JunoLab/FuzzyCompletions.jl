@@ -98,7 +98,7 @@ end
     @test comp("Mis") == "Missing"
 end
 
-@testset "Keyword Argument Completion" begin
+VERSION > v"1.9" && @testset "Keyword Argument Completion" begin
     @test comp("sin(sin") == "sin"
     @test comp("sum(x; dim") == "dims="
     @test comp("sum(x, dim") == "dims="
