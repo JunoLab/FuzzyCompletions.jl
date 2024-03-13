@@ -1,7 +1,7 @@
 name = "FuzzyCompletions"
 uuid = "fb4132e2-a121-4a70-b8a1-d5b831dcdcc2"
 authors = ["Shuhei Kadowaki <aviatesk@gmail.com>"]
-version = "0.5.2"
+version = "0.5.3"
 
 [deps]
 REPL = "3fa0cd96-eef1-5676-8a61-b3b8758bbffb"

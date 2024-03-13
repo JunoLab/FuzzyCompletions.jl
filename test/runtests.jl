@@ -60,7 +60,7 @@ end
     end
 end
 
-@testset "FieldCompletion" begin
+VERSION < v"1.11.0-DEV" && @testset "FieldCompletion" begin
     @test "offset" in comps("split(\"\", ' ')[1].")
     @test "offset" in comps("split(\"\", ' ')[1].offset")
     @test "offset" in comps("split(\"\", ' ')[1].offsett")
@@ -104,7 +104,7 @@ VERSION > v"1.9" && @testset "Keyword Argument Completion" begin
     @test comp("sum(x, dim") == "dims="
 end
 
-@testset "inferrability" begin
+VERSION >= v"1.7" && @testset "inferrability" begin
     @inferred FuzzyCompletions.completions("foo", lastindex("foo"), @__MODULE__)
 end
 
