@@ -98,7 +98,7 @@ end
     @test comp("Mis") == "Missing"
 end
 
-@testset "inferrability" begin
+VERSION >= v"1.7" && @testset "inferrability" begin
     @inferred FuzzyCompletions.completions("foo", lastindex("foo"), @__MODULE__)
 end
 
