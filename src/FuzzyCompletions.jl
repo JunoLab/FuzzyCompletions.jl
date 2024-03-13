@@ -460,7 +460,12 @@ function complete_keyword_argument(partial, last_idx, context_module)
     end
 
     suggestions = Completion[KeywordArgumentCompletion(kwarg, partial) for kwarg in kwargs]
-    # append!(suggestions, complete_symbol(last_word, Returns(true), context_module))
+    repl_completions = @static if VERSION ≥ v"1.10.0-DEV.981"
+        REPL.REPLCompletions.complete_symbol(nothing, last_word, Returns(true), context_module)
+    else
+        REPL.REPLCompletions.complete_symbol(last_word, (mod,x)->true, context_module)
+    end
+    append!(suggestions, transform_to_fuzzy_completion.(repl_completions))
 
     return sort!(suggestions, by=completion_text), wordrange
 end
@@ -483,6 +488,8 @@ function transform_to_fuzzy_completion(@nospecialize c)
         return TextCompletion(c.text)
     elseif @static VERSION ≥ v"1.9.0-DEV.1034" && isa(c, REPL.REPLCompletions.KeywordArgumentCompletion)
         return KeywordArgumentCompletion(c.kwarg)
+    elseif isa(c, REPL.REPLCompletions.ModuleCompletion)
+        return ModuleCompletion(c.parent, c.mod)
     else
         throw("FuzzyCompletions.jl not synced with REPL.REPLCompletions")
     end
