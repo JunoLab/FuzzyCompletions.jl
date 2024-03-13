@@ -601,60 +601,74 @@ end
 
 end # @static if isdefined(Base, :TOML)
 
-function completions(string::String, pos::Int, context_module::Module = Main, shift::Bool=true)
+function completions(string::String, pos::Int, context_module::Module = Main, shift::Bool=true; 
+    enable_questionmark_methods::Bool = true,
+    enable_dict_keys::Bool = true,
+    enable_expanduser::Bool = true,
+    enable_path::Bool = true,
+    enable_bslash::Bool = true,
+    enable_methods::Bool = true,
+    enable_keyword_argument::Bool = true,
+    enable_packages::Bool = true,
+    )
     # First parse everything up to the current position
     partial = string[1:pos]
     inc_tag = Base.incomplete_tag(Meta.parse(partial, raise=false, depwarn=false))
 
-    # ?(x, y)TAB lists methods you can call with these objects
-    # ?(x, y TAB lists methods that take these objects as the first two arguments
-    # MyModule.?(x, y)TAB restricts the search to names in MyModule
-    rexm = match(r"(\w+\.|)\?\((.*)$", partial)
-    if rexm !== nothing
-        # Get the module scope
-        if isempty(rexm.captures[1])
-            callee_module = context_module
-        else
-            modname = Symbol(rexm.captures[1][1:end-1])
-            if isdefined(context_module, modname)
-                callee_module = getfield(context_module, modname)
-                if !isa(callee_module, Module)
+    if enable_questionmark_methods
+        # ?(x, y)TAB lists methods you can call with these objects
+        # ?(x, y TAB lists methods that take these objects as the first two arguments
+        # MyModule.?(x, y)TAB restricts the search to names in MyModule
+        rexm = match(r"(\w+\.|)\?\((.*)$", partial)
+        if rexm !== nothing
+            # Get the module scope
+            if isempty(rexm.captures[1])
+                callee_module = context_module
+            else
+                modname = Symbol(rexm.captures[1][1:end-1])
+                if isdefined(context_module, modname)
+                    callee_module = getfield(context_module, modname)
+                    if !isa(callee_module, Module)
+                        callee_module = context_module
+                    end
+                else
                     callee_module = context_module
                 end
-            else
-                callee_module = context_module
             end
-        end
-        moreargs = !endswith(rexm.captures[2], ')')
-        callstr = "_(" * rexm.captures[2]
-        if moreargs
-            callstr *= ')'
-        end
-        ex_org = Meta.parse(callstr, raise=false, depwarn=false)
-        if isa(ex_org, Expr)
-            return complete_any_methods(ex_org, callee_module::Module, context_module, moreargs, shift), (0:length(rexm.captures[1])+1) .+ rexm.offset, false
+            moreargs = !endswith(rexm.captures[2], ')')
+            callstr = "_(" * rexm.captures[2]
+            if moreargs
+                callstr *= ')'
+            end
+            ex_org = Meta.parse(callstr, raise=false, depwarn=false)
+            if isa(ex_org, Expr)
+                return complete_any_methods(ex_org, callee_module::Module, context_module, moreargs, shift), (0:length(rexm.captures[1])+1) .+ rexm.offset, false
+            end
         end
     end
 
-    # if completing a key in a Dict
-    identifier, partial_key, loc = dict_identifier_key(partial,inc_tag, context_module)
-    if identifier !== nothing
-        matches = find_dict_matches(identifier)::Vector{String}
-        length(matches)==1 && (lastindex(string) <= pos || string[nextind(string,pos)] != ']') && (matches[1]*=']')
-        if length(matches)>0
-            suggestions = Completion[DictCompletion(identifier, match, partial_key) for match in matches]
-            return sort_suggestions!(suggestions), loc:pos, false
+    if enable_dict_keys
+        identifier, partial_key, loc = dict_identifier_key(partial,inc_tag, context_module)
+        if identifier !== nothing
+            matches = find_dict_matches(identifier)::Vector{String}
+            length(matches)==1 && (lastindex(string) <= pos || string[nextind(string,pos)] != ']') && (matches[1]*=']')
+            if length(matches)>0
+                suggestions = Completion[DictCompletion(identifier, match, partial_key) for match in matches]
+                return sort_suggestions!(suggestions), loc:pos, false
+            end
         end
     end
 
     # otherwise...
-    if inc_tag in [:cmd, :string]
+    if enable_path && inc_tag in [:cmd, :string]
         m = match(r"[\t\n\r\"`><=*?|]| (?!\\)", reverse(partial))
         startpos = nextind(partial, reverseind(partial, m.offset))
         r = startpos:pos
 
-        expanded = complete_expanduser(replace(string[r], r"\\ " => " "), r)
-        expanded[3] && return expanded  # If user expansion available, return it
+        if enable_expanduser
+            expanded = complete_expanduser(replace(string[r], r"\\ " => " "), r)
+            expanded[3] && return expanded  # If user expansion available, return it
+        end
 
         paths, r, success = complete_path(replace(string[r], r"\\ " => " "), pos)
 
@@ -674,12 +688,15 @@ function completions(string::String, pos::Int, context_module::Module = Main, sh
         (success || inc_tag === :cmd) && return paths, r, success
     end
 
-    ok, ret = bslash_completions(string, pos)
-    ok && return ret
+    if enable_bslash
+        ok, ret = bslash_completions(string, pos)
+        ok && return ret
+    end
 
     # Make sure that only bslash_completions is working on strings
-    inc_tag==:string && return Completion[], 0:-1, false
-    if @static VERSION ≥ v"1.9.0-DEV.1034" && inc_tag === :other
+    inc_tag === :string && return Completion[], 0:-1, false
+
+    if @static VERSION ≥ v"1.9.0-DEV.1034" && enable_methods && inc_tag === :other
         frange, ex, wordrange, method_name_end = identify_possible_method_completion(partial, pos)
         if last(frange) != -1 && all(isspace, @view partial[wordrange]) # no last argument to complete
             if ex.head === :call
@@ -688,7 +705,7 @@ function completions(string::String, pos::Int, context_module::Module = Main, sh
                 return complete_methods(ex, context_module, shift), first(frange):(method_name_end - 1), false
             end
         end
-    elseif @static VERSION < v"1.9.0-DEV.1034" && inc_tag === :other && should_method_complete(partial)
+    elseif @static VERSION < v"1.9.0-DEV.1034" && enable_methods && inc_tag === :other && should_method_complete(partial)
         frange, method_name_end = find_start_brace(partial)
         # strip preceding ! operator
         s = replace(partial[frange], r"\!+([^=\(]+)" => s"\1")
@@ -708,10 +725,10 @@ function completions(string::String, pos::Int, context_module::Module = Main, sh
         return Completion[], 0:-1, false
     end
 
-    @static if VERSION ≥ v"1.9.0-DEV.1034"
-    # Check whether we can complete a keyword argument in a function call
-    kwarg_completion, wordrange = complete_keyword_argument(partial, pos, context_module)
-    isempty(wordrange) || return kwarg_completion, wordrange, !isempty(kwarg_completion)
+    enable_keyword_argument && @static if VERSION ≥ v"1.9.0-DEV.1034"
+        # Check whether we can complete a keyword argument in a function call
+        kwarg_completion, wordrange = complete_keyword_argument(partial, pos, context_module)
+        isempty(wordrange) || return kwarg_completion, wordrange, !isempty(kwarg_completion)
     end
 
     dotpos = something(findprev(isequal('.'), string, pos), 0)
@@ -724,7 +741,7 @@ function completions(string::String, pos::Int, context_module::Module = Main, sh
     ffunc = (mod,x)->true
     suggestions = Completion[]
     comp_keywords = true
-    if afterusing(string, startpos)
+    if enable_packages && afterusing(string, startpos)
         # We're right after using or import. Let's look only for packages
         # and modules we can reach from here
 
