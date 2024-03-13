@@ -60,13 +60,12 @@ end
     end
 end
 
-@testset "FieldCompletion" begin
-    skip = VERSION ≥ v"1.11.0-DEV"
-    @test "offset" in comps("split(\"\", ' ')[1].") skip = skip
-    @test "offset" in comps("split(\"\", ' ')[1].offset") skip = skip
-    @test "offset" in comps("split(\"\", ' ')[1].offsett") skip = skip
-    @test "offset" in comps("split(\"\", ' ')[1].ofst") skip = skip
-    @test "offset" in comps("split(\"\", ' ')[1].") skip = skip
+VERSION < v"1.11.0-DEV" && @testset "FieldCompletion" begin
+    @test "offset" in comps("split(\"\", ' ')[1].")
+    @test "offset" in comps("split(\"\", ' ')[1].offset")
+    @test "offset" in comps("split(\"\", ' ')[1].offsett")
+    @test "offset" in comps("split(\"\", ' ')[1].ofst")
+    @test "offset" in comps("split(\"\", ' ')[1].")
 end
 
 @testset "BalashCompletion" begin
@@ -99,7 +98,7 @@ end
     @test comp("Mis") == "Missing"
 end
 
-@testset "inferrability" begin
+VERSION >= v"1.7" && @testset "inferrability" begin
     @inferred FuzzyCompletions.completions("foo", lastindex("foo"), @__MODULE__)
 end
 
