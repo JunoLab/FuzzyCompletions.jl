@@ -404,7 +404,6 @@ import REPL.REPLCompletions:
     subscript_regex,
     superscripts,
     superscript_regex,
-    afterusing,
     dict_identifier_key
 
 @static if VERSION ≥ v"1.10.0-DEV.941"
@@ -460,7 +459,10 @@ function complete_keyword_argument(partial, last_idx, context_module)
     end
 
     suggestions = Completion[KeywordArgumentCompletion(kwarg, partial) for kwarg in kwargs]
-    repl_completions = @static if VERSION ≥ v"1.10.0-DEV.981"
+    repl_completions = @static if VERSION ≥ v"1.12.0-DEV.639"
+        REPL.REPLCompletions.complete_symbol!(REPL.REPLCompletions.Completion[],
+                                              nothing, last_word, context_module)
+    elseif VERSION ≥ v"1.10.0-DEV.981"
         REPL.REPLCompletions.complete_symbol(nothing, last_word, Returns(true), context_module)
     else
         REPL.REPLCompletions.complete_symbol(last_word, (mod,x)->true, context_module)
@@ -601,7 +603,13 @@ end
 
 end # @static if isdefined(Base, :TOML)
 
-function completions(string::String, pos::Int, context_module::Module = Main, shift::Bool=true; 
+after_using_or_import(string, startpos) = @static if VERSION ≥ v"1.12.0-DEV.699"
+    REPL.REPLCompletions.get_import_mode(string) ∈ (:using_module, :import_module)
+else
+    REPL.REPLCompletions.afterusing(string, startpos)
+end
+
+function completions(string::String, pos::Int, context_module::Module = Main, shift::Bool=true;
     enable_questionmark_methods::Bool = true,
     enable_dict_keys::Bool = true,
     enable_expanduser::Bool = true,
@@ -741,7 +749,7 @@ function completions(string::String, pos::Int, context_module::Module = Main, sh
     ffunc = (mod,x)->true
     suggestions = Completion[]
     comp_keywords = true
-    if enable_packages && afterusing(string, startpos)
+    if enable_packages && after_using_or_import(string, startpos)
         # We're right after using or import. Let's look only for packages
         # and modules we can reach from here
 
